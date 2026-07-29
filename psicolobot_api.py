@@ -76,6 +76,65 @@ def detectar_emociones_lexico(texto: str, lexico: dict[str, list[str]]) -> list[
                 break  # Una coincidencia por categoría es suficiente
     return detectadas
 
+# ─── Guardrail de seguridad: override de riesgo por frases críticas ──
+import re
+
+# Frases que SIEMPRE deben ser CRITICO (ideación suicida, autolesión, deseo de muerte)
+PATRONES_CRITICO = [
+    r"quiero\s+morir",
+    r"quiero\s+matarme",
+    r"me\s+quiero\s+matar",
+    r"no\s+quiero\s+seguir\s+viv",
+    r"mejor\s+me\s+muero",
+    r"me\s+voy\s+a\s+(matar|suicidar)",
+    r"pienso\s+en\s+(suicid|matarme|morir)",
+    r"ya\s+no\s+quiero\s+(estar|existir|vivir)",
+    r"me\s+(corto|lastimo|hago\s+daño)",
+    r"autolesion",
+    r"cortarme\s+(las\s+venas|los\s+brazos)",
+    r"tengo\s+un\s+plan\s+para\s+morir",
+    r"esta\s+noche\s+me\s+(mato|muero)",
+    r"pastillas.*morir",
+    r"sobredosis",
+    r"colgarme|ahorcarme",
+    r"tirarme\s+(de|al)",
+]
+
+# Frases que deben ser mínimo ALTO (carga emocional, desesperanza severa)
+PATRONES_ALTO = [
+    r"mejor\s+sin\s+m[ií]",
+    r"estar[ií]an\s+mejor\s+sin\s+m[ií]",
+    r"no\s+le\s+(encuentro|veo)\s+sentido",
+    r"no\s+sirvo\s+para\s+nada",
+    r"soy\s+una\s+carga",
+    r"nadie\s+me\s+(quiere|necesita|extrañar)",
+    r"no\s+tengo\s+raz[oó]n\s+(para|de)\s+vivir",
+    r"ojal[aá]\s+no\s+(hubiera|existiera|despertara)",
+    r"desaparecer",
+    r"no\s+puedo\s+m[aá]s",
+    r"estoy\s+harto.*todo",
+    r"ya\s+no\s+aguanto",
+    r"todo\s+me\s+sale\s+mal",
+    r"no\s+hay\s+salida",
+    r"me\s+siento\s+(vac[ií]o|inútil|invisible)",
+]
+
+RISK_ORDER = {"BAJO": 0, "MEDIO": 1, "ALTO": 2, "CRITICO": 3}
+
+def evaluar_riesgo_minimo(texto: str) -> str:
+    """Analiza el texto buscando patrones de riesgo que el modelo podría subestimar.
+    Retorna el nivel de riesgo MÍNIMO que debe aplicarse, o 'BAJO' si no detecta nada."""
+    texto_lower = texto.lower()
+    # Primero buscar CRITICO (más urgente)
+    for patron in PATRONES_CRITICO:
+        if re.search(patron, texto_lower):
+            return "CRITICO"
+    # Luego ALTO
+    for patron in PATRONES_ALTO:
+        if re.search(patron, texto_lower):
+            return "ALTO"
+    return "BAJO"
+
 # ─── Cargar modelo LLM ─────────────────────────────────────────
 print("Cargando modelo PsicoloBot...")
 model, tokenizer = FastLanguageModel.from_pretrained(
@@ -208,7 +267,18 @@ async def analizar(req: PostRequest):
 
     try:
         resultado = json.loads(raw_clean)
-        # Guardrail: si es CRITICO y no mencionó la línea, la forzamos
+
+        # ── Guardrail de seguridad: override de riesgo ──────────────
+        riesgo_modelo = resultado.get("riesgo", "MEDIO").upper()
+        riesgo_minimo = evaluar_riesgo_minimo(texto)
+
+        # Si nuestro detector dice que el riesgo es mayor, lo subimos
+        if RISK_ORDER.get(riesgo_minimo, 0) > RISK_ORDER.get(riesgo_modelo, 0):
+            print(f"⚠️  GUARDRAIL: Riesgo del modelo ({riesgo_modelo}) overridden a {riesgo_minimo}")
+            resultado["riesgo"] = riesgo_minimo
+            resultado["guardrail_activado"] = True
+
+        # Si el riesgo final es CRITICO, forzar Línea de la Vida
         if resultado.get("riesgo", "").upper() == "CRITICO":
             linea = "Línea de la Vida: 800 911 2000"
             if linea not in resultado.get("respuesta", ""):
