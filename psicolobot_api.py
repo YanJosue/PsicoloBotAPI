@@ -23,7 +23,7 @@ def init_db():
 
 init_db()
 
-def obtener_historial(session_id: str, limit: int = 6):
+def obtener_historial(session_id: str, limit: int = 4):
     """Obtiene los últimos N mensajes de la sesión para dar contexto."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -79,7 +79,7 @@ def detectar_emociones_lexico(texto: str, lexico: dict[str, list[str]]) -> list[
 # ─── Cargar modelo LLM ─────────────────────────────────────────
 print("Cargando modelo PsicoloBot...")
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name=LORA_DIR, max_seq_length=1024,
+    model_name=LORA_DIR, max_seq_length=2048,
     dtype=None, load_in_4bit=True,
 )
 FastLanguageModel.for_inference(model)
@@ -197,8 +197,12 @@ async def analizar(req: PostRequest):
                     f"\n\n⚠️ Si sientes que estás en peligro, por favor llama a la {linea}. No estás solo/a."
                 )
                 
-        # Guardar en memoria: prompt completo del user + JSON crudo del modelo (consistencia de formato)
-        guardar_interaccion(session_id, user_content, raw_clean)
+        # Guardar en memoria: texto del usuario + JSON compacto del modelo (ahorra tokens de contexto)
+        compact_assistant = json.dumps({
+            "emocion": resultado.get("emocion", ""),
+            "respuesta": resultado.get("respuesta", "")
+        }, ensure_ascii=False)
+        guardar_interaccion(session_id, texto, compact_assistant)
         
         return resultado
     except json.JSONDecodeError:
