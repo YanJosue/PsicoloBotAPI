@@ -143,20 +143,40 @@ async def analizar(req: PostRequest):
     # Recuperar historial de chat
     historial = obtener_historial(session_id)
 
-    # Fase 2: Construir el prompt usando el formato Llama 3 Instruct (chat template)
+    # Fase 2: Construir el prompt como UN SOLO TURNO (el modelo fue fine-tuneado así)
+    # El historial se inyecta como contexto dentro del mensaje del usuario,
+    # NO como turnos separados en el chat template.
+    context_section = ""
+    if historial:
+        context_lines = []
+        for msg in historial:
+            if msg["role"] == "user":
+                context_lines.append(f"- Paciente dijo: \"{msg['content']}\"")
+            elif msg["role"] == "assistant":
+                try:
+                    parsed = json.loads(msg["content"])
+                    context_lines.append(
+                        f"- PsicoloBot respondió [emoción: {parsed.get('emocion', '?')}]: "
+                        f"\"{parsed.get('respuesta', '')}\""
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    context_lines.append(f"- PsicoloBot respondió: \"{msg['content']}\"")
+        context_section = (
+            "Historial reciente de la conversación (úsalo para dar continuidad):\n"
+            + "\n".join(context_lines)
+            + "\n\n"
+        )
+
     user_content = (
         f"Contexto léxico: El motor de análisis detectó las siguientes emociones: [{etiquetas}]\n\n"
-        f"Texto del usuario:\n{texto}"
+        f"{context_section}"
+        f"Mensaje actual del usuario:\n{texto}"
     )
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    
-    # Inyectar historial previo (limitado para no reventar la VRAM)
-    if historial:
-        messages.extend(historial)
-        
-    # Añadir el mensaje actual
-    messages.append({"role": "user", "content": user_content})
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
 
     # Usar el chat template nativo del modelo (Llama 3 Instruct)
     prompt_final = tokenizer.apply_chat_template(
