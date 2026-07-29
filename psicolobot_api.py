@@ -197,8 +197,8 @@ async def analizar(req: PostRequest):
                     f"\n\n⚠️ Si sientes que estás en peligro, por favor llama a la {linea}. No estás solo/a."
                 )
                 
-        # Guardar en memoria la interacción (solo el texto del usuario y la respuesta empática del bot)
-        guardar_interaccion(session_id, texto, resultado.get("respuesta", ""))
+        # Guardar en memoria: prompt completo del user + JSON crudo del modelo (consistencia de formato)
+        guardar_interaccion(session_id, user_content, raw_clean)
         
         return resultado
     except json.JSONDecodeError:
