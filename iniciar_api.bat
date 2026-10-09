@@ -8,6 +8,6 @@ pip install -r requirements.txt
 
 echo.
 echo [2] Levantando Servidor FastAPI + Modelo LoRA...
-uvicorn psicolobot_api:app --host 0.0.0.0 --port 8000
+python psicolobot_api.py
 
 pause
