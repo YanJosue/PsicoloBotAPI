@@ -1,31 +1,36 @@
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from unsloth import FastLanguageModel
-import torch, json, csv, os, uvicorn
+from llm import LoraGenerator
+import functools, json, csv, os, threading, uvicorn
 
 import sqlite3
 
 # ─── Configuración ──────────────────────────────────────────────
-LORA_DIR = "lora_psicolobot_v3"
-BASE_CONOCIMIENTOS = "datasets/base_conocimientos.csv"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_CONOCIMIENTOS = os.path.join(BASE_DIR, "datasets", "base_conocimientos.csv")
 MAX_INPUT_CHARS = 1800
-DB_PATH = "chat_memory.db"
+DEFAULT_DB_PATH = "chat_memory.db"
 
-# ─── Inicializar Base de Datos de Memoria ───────────────────────
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS memory
-                 (session_id TEXT, role TEXT, content TEXT)''')
+def get_db_path() -> str:
+    """SQLite file path, read on every call so it can be set via PSICOLOBOT_DB_PATH."""
+    return os.environ.get("PSICOLOBOT_DB_PATH", DEFAULT_DB_PATH)
+
+# ─── Base de Datos de Memoria ───────────────────────────────────
+def _connect() -> sqlite3.Connection:
+    """Open the memory DB, creating the schema on first use."""
+    conn = sqlite3.connect(get_db_path())
+    conn.execute('''CREATE TABLE IF NOT EXISTS memory
+                    (session_id TEXT, role TEXT, content TEXT)''')
     conn.commit()
-    conn.close()
+    return conn
 
-init_db()
+def init_db():
+    _connect().close()
 
 def obtener_historial(session_id: str, limit: int = 4):
     """Obtiene los últimos N mensajes de la sesión para dar contexto."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     c = conn.cursor()
     c.execute("SELECT role, content FROM memory WHERE session_id=? ORDER BY rowid DESC LIMIT ?", (session_id, limit))
     rows = c.fetchall()
@@ -34,7 +39,7 @@ def obtener_historial(session_id: str, limit: int = 4):
     return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
 
 def guardar_interaccion(session_id: str, user_text: str, assistant_text: str):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     c = conn.cursor()
     c.execute("INSERT INTO memory (session_id, role, content) VALUES (?, ?, ?)", (session_id, "user", user_text))
     c.execute("INSERT INTO memory (session_id, role, content) VALUES (?, ?, ?)", (session_id, "assistant", assistant_text))
@@ -59,8 +64,11 @@ def cargar_lexico(path: str) -> dict[str, list[str]]:
     print(f"✅ Base de conocimientos cargada: {sum(len(v) for v in lexico.values())} términos en {len(lexico)} categorías")
     return lexico
 
-print("Cargando base de conocimientos...")
-LEXICO = cargar_lexico(BASE_CONOCIMIENTOS)
+@functools.lru_cache(maxsize=1)
+def get_lexico() -> dict[str, list[str]]:
+    """Load the lexicon on first use (path is relative to this module)."""
+    print("Cargando base de conocimientos...")
+    return cargar_lexico(BASE_CONOCIMIENTOS)
 
 # ─── Detector léxico (Fase 1 ligera) ───────────────────────────
 def detectar_emociones_lexico(texto: str, lexico: dict[str, list[str]]) -> list[str]:
@@ -135,14 +143,17 @@ def evaluar_riesgo_minimo(texto: str) -> str:
             return "ALTO"
     return "BAJO"
 
-# ─── Cargar modelo LLM ─────────────────────────────────────────
-print("Cargando modelo PsicoloBot...")
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name=LORA_DIR, max_seq_length=2048,
-    dtype=None, load_in_4bit=True,
-)
-FastLanguageModel.for_inference(model)
-print("✅ Modelo listo")
+# ─── Generador LLM (carga perezosa, inyectable) ─────────────────
+_generator: LoraGenerator | None = None
+_generator_lock = threading.Lock()
+
+def get_generator() -> LoraGenerator:
+    """FastAPI dependency: lazily created singleton (the model loads on first use)."""
+    global _generator
+    with _generator_lock:
+        if _generator is None:
+            _generator = LoraGenerator()
+        return _generator
 
 # ─── System Prompt con guardrails de seguridad ──────────────────
 SYSTEM_PROMPT = """Eres PsicoloBot, un asistente de contención emocional especializado en español mexicano.
@@ -191,12 +202,12 @@ class PostRequest(BaseModel):
     session_id: str = "default_session"
 
 @app.post("/analizar")
-async def analizar(req: PostRequest):
+async def analizar(req: PostRequest, generator: LoraGenerator = Depends(get_generator)):
     texto = req.texto[:MAX_INPUT_CHARS]
     session_id = req.session_id
 
     # Fase 1: Análisis léxico rápido con la base de conocimientos
-    emociones_lexicas = detectar_emociones_lexico(texto, LEXICO)
+    emociones_lexicas = detectar_emociones_lexico(texto, get_lexico())
     etiquetas = ", ".join(emociones_lexicas) if emociones_lexicas else "ninguna detectada"
 
     # Recuperar historial de chat
@@ -237,26 +248,7 @@ async def analizar(req: PostRequest):
         {"role": "user", "content": user_content},
     ]
 
-    # Usar el chat template nativo del modelo (Llama 3 Instruct)
-    prompt_final = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-
-    inputs = tokenizer([prompt_final], return_tensors="pt").to("cuda")
-
-    with torch.no_grad():
-        out = model.generate(
-            **inputs,
-            max_new_tokens=350,
-            do_sample=False,        # Greedy decoding para mayor precisión
-            repetition_penalty=1.2,  # Evitar respuestas repetitivas
-            pad_token_id=tokenizer.eos_token_id,
-        )
-
-    n = inputs["input_ids"].shape[1]
-    raw = tokenizer.decode(out[0][n:], skip_special_tokens=True).strip()
+    raw = generator.generate(messages)
 
     # Limpiar y parsear el JSON de salida
     raw_clean = raw.replace("```json", "").replace("```", "").strip()
@@ -308,7 +300,16 @@ async def analizar(req: PostRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model": "psicolobot-v3.1", "lexico_terms": sum(len(v) for v in LEXICO.values())}
+    return {
+        "status": "ok",
+        "model": "psicolobot-v3.1",
+        "lexico_terms": sum(len(v) for v in get_lexico().values()),
+        "model_loaded": _generator is not None and _generator.loaded,
+    }
 
 if __name__ == "__main__":
+    # Warm everything up before serving so first-request latency is unchanged.
+    init_db()
+    get_lexico()
+    get_generator().load()
     uvicorn.run(app, host="0.0.0.0", port=8000)
