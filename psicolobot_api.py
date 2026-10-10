@@ -1,18 +1,12 @@
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from llm import LoraGenerator
-# Named imports on purpose: a PyPI package called "safety" exists, and if it
-# ever shadowed our module this must fail at startup, not on every request.
-from safety import (
-    HOTLINE_SENTENCE,
-    RISK_ORDER,
-    SafetyAssessment,
-    assess,
-    max_risk,
-    resources_for,
-    safe_reply_for,
-)
+from model_output import AnalysisResponse, build_response
+# Named imports on purpose: "crisis_safety" (not "safety") because an unrelated
+# PyPI package called "safety" can be installed and shadow a module of that
+# name; if anything ever shadows this one it must fail at startup.
+from crisis_safety import assess
 import functools, json, csv, os, threading, uvicorn
 
 import sqlite3
@@ -20,7 +14,8 @@ import sqlite3
 # ─── Configuración ──────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_CONOCIMIENTOS = os.path.join(BASE_DIR, "datasets", "base_conocimientos.csv")
-MAX_INPUT_CHARS = 1800
+MAX_INPUT_CHARS = 1800  # prompt truncation (the safety layer reads the full text)
+MAX_TEXT_CHARS = 4000  # longest "texto" a request may carry
 DEFAULT_DB_PATH = "chat_memory.db"
 
 def get_db_path() -> str:
@@ -138,78 +133,6 @@ Analiza el texto del usuario y responde ÚNICAMENTE con un JSON válido con esta
 ## EMOCIONES VÁLIDAS:
 alegria, amor, asco, culpa, dolor, enojo, ira, miedo, orgullo, tristeza, vergüenza"""
 
-# ─── Salida del modelo y guardrail de seguridad ─────────────────
-REPHRASE_REPLY = (
-    "Disculpa, no logré procesar bien tu mensaje. "
-    "¿Podrías decirme con otras palabras cómo te sientes?"
-)
-
-def parse_model_output(raw) -> dict | None:
-    """Parse the raw completion into a dict, or None when it is unusable
-    (not text, not JSON, or JSON that is not an object)."""
-    if not isinstance(raw, str):
-        return None
-    raw_clean = raw.replace("```json", "").replace("```", "").strip()
-    # A veces el modelo mete texto después del JSON, cortamos en el último '}'
-    last_brace = raw_clean.rfind("}")
-    if last_brace != -1:
-        raw_clean = raw_clean[:last_brace + 1]
-    try:
-        parsed = json.loads(raw_clean)
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-def normalize_model_risk(value) -> str:
-    """Model risk label as an upper-case level; anything unusable counts as MEDIO."""
-    key = value.strip().upper() if isinstance(value, str) else ""
-    return key if key in RISK_ORDER else "MEDIO"
-
-def apply_guardrail(resultado: dict, seguridad: SafetyAssessment) -> dict:
-    """Final risk = max(model risk, safety level); make sure a CRITICO reply
-    carries the Línea de la Vida sentence. Mutates and returns ``resultado``."""
-    riesgo_modelo = normalize_model_risk(resultado.get("riesgo"))
-    riesgo_final = max_risk(riesgo_modelo, seguridad.level)
-    elevado = RISK_ORDER[riesgo_final] > RISK_ORDER[riesgo_modelo]
-    if elevado:
-        print(f"⚠️  GUARDRAIL: model risk ({riesgo_modelo}) raised to {riesgo_final}")
-
-    respuesta = resultado.get("respuesta")
-    if not isinstance(respuesta, str):
-        respuesta = ""
-    if not respuesta.strip():
-        respuesta = safe_reply_for(riesgo_final) or respuesta
-    if riesgo_final == "CRITICO" and HOTLINE_SENTENCE not in respuesta:
-        respuesta += (
-            f"\n\n⚠️ Si sientes que estás en peligro, por favor llama a la {HOTLINE_SENTENCE}. "
-            "No estás solo/a."
-        )
-
-    resultado["riesgo"] = riesgo_final
-    resultado["respuesta"] = respuesta
-    resultado["guardrail_activado"] = elevado
-    resultado["recursos_crisis"] = resources_for(riesgo_final)
-    return resultado
-
-def fallback_response(seguridad: SafetyAssessment, raw: str | None) -> dict:
-    """Response for an unusable model completion or a raising generator.
-    The risk never drops below MEDIO and never below the safety level."""
-    riesgo = max_risk("MEDIO", seguridad.level)
-    response = {
-        "riesgo": riesgo,
-        "emocion": "No detectable",
-        "tematica": "No detectable",
-        "resumen": "No se pudo procesar la respuesta del modelo.",
-        "respuesta": safe_reply_for(riesgo) or REPHRASE_REPLY,
-        "modismos": [],
-        "guardrail_activado": RISK_ORDER[riesgo] > RISK_ORDER["MEDIO"],
-        "recursos_crisis": resources_for(riesgo),
-    }
-    if raw is not None:
-        # Planned for removal in task A3 (raw model output must not leak).
-        response["error_debug"] = raw[:300]
-    return response
-
 # ─── FastAPI ────────────────────────────────────────────────────
 app = FastAPI(title="Psicolobot API", version="3.1")
 
@@ -222,10 +145,17 @@ app.add_middleware(
 )
 
 class PostRequest(BaseModel):
-    texto: str
+    texto: str = Field(max_length=MAX_TEXT_CHARS)
     session_id: str = "default_session"
 
-@app.post("/analizar")
+    @field_validator("texto")
+    @classmethod
+    def texto_no_vacio(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("texto must not be blank")
+        return value
+
+@app.post("/analizar", response_model=AnalysisResponse)
 async def analizar(req: PostRequest, generator: LoraGenerator = Depends(get_generator)):
     # The safety layer reads the FULL raw text, before the prompt truncation
     # and before the model is called, so it cannot depend on either.
@@ -275,25 +205,26 @@ async def analizar(req: PostRequest, generator: LoraGenerator = Depends(get_gene
         {"role": "user", "content": user_content},
     ]
 
-    # A raising generator is handled like unparseable output: never a 500.
-    # Only the exception type is logged; its message may contain user text.
+    # A raising generator is handled like unusable output: never a 500.
+    # Only the exception type and sizes are logged; neither the exception
+    # message nor the model output may contain or reveal user text.
     raw = None
     try:
         raw = generator.generate(messages)
     except Exception as exc:
         print(f"⚠️  Generator failed ({type(exc).__name__}); using the safety fallback")
 
-    resultado = parse_model_output(raw)
-    if resultado is None:
-        respuesta = fallback_response(seguridad, raw)
-    else:
-        respuesta = apply_guardrail(resultado, seguridad)
+    respuesta = build_response(raw, seguridad)
+    if raw is not None and not respuesta.procesado:
+        print(f"⚠️  Model output unusable ({len(raw)} chars); using the safety fallback")
+    if respuesta.guardrail_activado:
+        print(f"⚠️  GUARDRAIL: model risk raised to {respuesta.riesgo}")
 
     # Guardar en memoria: texto del usuario + JSON compacto del asistente (ahorra tokens
     # de contexto). También en los fallbacks, para no perder la continuidad.
     compact_assistant = json.dumps({
-        "emocion": respuesta.get("emocion", ""),
-        "respuesta": respuesta.get("respuesta", "")
+        "emocion": respuesta.emocion,
+        "respuesta": respuesta.respuesta
     }, ensure_ascii=False)
     guardar_interaccion(session_id, texto, compact_assistant)
 

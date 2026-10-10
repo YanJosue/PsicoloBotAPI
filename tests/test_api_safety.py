@@ -9,7 +9,7 @@ import sqlite3
 
 import pytest
 
-import safety
+import crisis_safety
 from tests.fakes import model_json
 
 HOTLINE = "Línea de la Vida: 800 911 2000"
@@ -157,7 +157,7 @@ def test_empty_model_reply_is_replaced_by_the_safe_template(
 
     body = analizar(client, CRISIS_TEXT).json()
 
-    assert body["respuesta"] == safety.SAFE_REPLY_CRITICO
+    assert body["respuesta"] == crisis_safety.SAFE_REPLY_CRITICO
 
 
 def test_crisis_phrase_after_the_prompt_truncation_point_is_still_detected(
@@ -200,7 +200,7 @@ def test_generator_exception_with_crisis_text_returns_the_safe_critico_reply(
     assert body["riesgo"] == "CRITICO"
     assert body["guardrail_activado"] is True
     assert body["recursos_crisis"] == EXPECTED_RESOURCES
-    assert body["respuesta"] == safety.SAFE_REPLY_CRITICO
+    assert body["respuesta"] == crisis_safety.SAFE_REPLY_CRITICO
     assert HOTLINE in body["respuesta"]
 
 
@@ -212,7 +212,7 @@ def test_generator_exception_with_alto_text_returns_the_safe_alto_reply(
     assert body["riesgo"] == "ALTO"
     assert body["guardrail_activado"] is True
     assert body["recursos_crisis"] == EXPECTED_RESOURCES
-    assert body["respuesta"] == safety.SAFE_REPLY_ALTO
+    assert body["respuesta"] == crisis_safety.SAFE_REPLY_ALTO
 
 
 def test_generator_exception_with_benign_text_is_a_medio_rephrase_request(
@@ -252,7 +252,7 @@ def test_malformed_output_with_crisis_text_returns_the_safe_critico_reply(
     assert body["riesgo"] == "CRITICO"
     assert body["guardrail_activado"] is True
     assert body["recursos_crisis"] == EXPECTED_RESOURCES
-    assert body["respuesta"] == safety.SAFE_REPLY_CRITICO
+    assert body["respuesta"] == crisis_safety.SAFE_REPLY_CRITICO
 
 
 def test_malformed_output_with_alto_text_returns_the_safe_alto_reply(
@@ -264,7 +264,7 @@ def test_malformed_output_with_alto_text_returns_the_safe_alto_reply(
 
     assert body["riesgo"] == "ALTO"
     assert body["recursos_crisis"] == EXPECTED_RESOURCES
-    assert body["respuesta"] == safety.SAFE_REPLY_ALTO
+    assert body["respuesta"] == crisis_safety.SAFE_REPLY_ALTO
 
 
 def test_malformed_output_with_benign_text_keeps_the_rephrase_request(
@@ -291,7 +291,7 @@ def test_json_that_is_not_an_object_is_treated_as_unparseable(
     assert response.status_code == 200
     body = response.json()
     assert body["riesgo"] == "CRITICO"
-    assert body["respuesta"] == safety.SAFE_REPLY_CRITICO
+    assert body["respuesta"] == crisis_safety.SAFE_REPLY_CRITICO
 
 
 # ─── Memory continuity on the fallback paths ────────────────────
@@ -313,7 +313,7 @@ def test_unparseable_output_still_stores_the_interaction(
     assert rows[0][1] == CRISIS_TEXT
     assert json.loads(rows[1][1]) == {
         "emocion": "No detectable",
-        "respuesta": safety.SAFE_REPLY_CRITICO,
+        "respuesta": crisis_safety.SAFE_REPLY_CRITICO,
     }
     second = fake_generator.user_content(1)
     assert f'- Paciente dijo: "{CRISIS_TEXT}"' in second
@@ -330,7 +330,7 @@ def test_generator_exception_still_stores_the_interaction(
         ).fetchall()
     assert [r[0] for r in rows] == ["user", "assistant"]
     assert rows[0][1] == HIGH_TEXT
-    assert json.loads(rows[1][1])["respuesta"] == safety.SAFE_REPLY_ALTO
+    assert json.loads(rows[1][1])["respuesta"] == crisis_safety.SAFE_REPLY_ALTO
 
 
 # ─── Privacy: user text is never logged ─────────────────────────

@@ -1,4 +1,4 @@
-"""Unit tests for the LLM-independent crisis safety layer (``safety.py``).
+"""Unit tests for the LLM-independent crisis safety layer (``crisis_safety.py``).
 
 Detection is recall-first: a missed crisis is the dangerous error, so these
 tests pin both the phrasings that MUST escalate and the figurative ones that
@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-import safety
-from safety import (
+import crisis_safety
+from crisis_safety import (
     CRISIS_RESOURCES,
     RISK_ORDER,
     SAFE_REPLY_ALTO,
@@ -201,10 +201,11 @@ EXTRA_BENIGN = [
 BENIGN_PHRASES = REQUIRED_BENIGN + EXTRA_BENIGN
 
 
-def test_safety_resolves_to_the_local_module_not_the_pypi_package():
-    # A PyPI package called "safety" exists; this repo's module must win.
+def test_crisis_safety_resolves_to_the_local_module_not_the_pypi_package():
+    # An unrelated PyPI package called "safety" can be installed and shadow a
+    # local module of that name; that is why this module is "crisis_safety".
     repo_root = Path(__file__).resolve().parent.parent
-    assert Path(safety.__file__).resolve() == repo_root / "safety.py"
+    assert Path(crisis_safety.__file__).resolve() == repo_root / "crisis_safety.py"
 
 
 @pytest.mark.parametrize("text", CRITICAL_PHRASES)
@@ -429,8 +430,8 @@ def test_critico_template_validates_asks_about_safety_and_gives_hotlines():
 
     assert reply == SAFE_REPLY_CRITICO
     assert "¿Estás a salvo" in reply
-    assert safety.HOTLINE_SENTENCE == "Línea de la Vida: 800 911 2000"
-    assert safety.HOTLINE_SENTENCE in reply
+    assert crisis_safety.HOTLINE_SENTENCE == "Línea de la Vida: 800 911 2000"
+    assert crisis_safety.HOTLINE_SENTENCE in reply
     assert "911" in reply.replace("800 911 2000", "")
 
 
