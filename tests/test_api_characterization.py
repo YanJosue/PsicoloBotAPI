@@ -2,8 +2,8 @@
 
 These pin the behavior of the API before the safety/privacy work so the
 refactor can be proven behavior-preserving. Assertions that describe
-behavior planned to change (``error_debug`` and the shared ``session_id``)
-are marked and will be rewritten by the task that changes them.
+behavior planned to change (the shared ``session_id``) are marked and will
+be rewritten by the task that changes them.
 """
 
 import sqlite3
@@ -273,8 +273,9 @@ def test_malformed_model_output_returns_the_medio_fallback(
         "¿Podrías decirme con otras palabras cómo te sientes?"
     )
     assert body["modismos"] == []
-    # Planned for removal in task A3 (raw model output must not leak).
-    assert body["error_debug"] == "esto no es json en absoluto"
+    # Raw model output must never reach the client (removed in A3).
+    assert "error_debug" not in body
+    assert body["procesado"] is False
 
 
 def test_parse_failure_still_stores_the_interaction(client, fake_generator):

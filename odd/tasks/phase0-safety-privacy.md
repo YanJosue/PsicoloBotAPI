@@ -38,15 +38,15 @@ Route legend: D = delegated direct (trigger: 2+ non-trivial files incl. tests).
 
 ### API (`PsicoloBotAPI`, branch `feat/phase0-safety-privacy`)
 - [x] **A1** Testable structure: lazy model loading behind an injectable generator, env-configurable DB path, pytest harness with a fake generator. Route D.
-- [ ] **A2** Independent crisis layer (`safety.py`): accent/orthography normalization, expanded Mexican-Spanish CRITICO/ALTO patterns, figurative exclusions, applied to the full raw text before the LLM and on every path (success, parse failure, exception); final risk = max(model, safety); crisis resources payload; safe reply template when the model fails at ≥ ALTO. Route D.
+- [x] **A2** Independent crisis layer (`safety.py`): accent/orthography normalization, expanded Mexican-Spanish CRITICO/ALTO patterns, figurative exclusions, applied to the full raw text before the LLM and on every path (success, parse failure, exception); final risk = max(model, safety); crisis resources payload; safe reply template when the model fails at ≥ ALTO. Route D.
 - [ ] **A3** Output validation: Pydantic response model, risk/emotion normalization (unknown risk never lowers safety), robust JSON extraction, `procesado` flag, remove `error_debug`. Route D.
 - [ ] **A4** Sessions & privacy: consent-gated token sessions, Bearer auth, `DELETE /sesion`, per-session max risk with 24 h window (`riesgo_sesion`, injected into the prompt), retention purge, CORS/host from env, optional API key. Route D.
 - [ ] **A5** Docs: README/INSTRUCCIONES for env vars, endpoints, legacy DB cleanup, safety-layer limits. Route D.
 
 ### App (`psicolobot-mobile`, branch `feat/phase0-safety-privacy` after baseline commit on `main`)
-- [ ] **M0** `git init -b main`, verify `.gitignore`, baseline snapshot commit (pre-existing code, not authored here). Route inline (mechanical).
-- [ ] **M1** Test runner: `jest-expo` + `@testing-library/react-native`, `npm test`, smoke test. Route D.
-- [ ] **M2** Honest copy & config: remove "Local" pill and false claims, accurate data notice, API URL/key from `EXPO_PUBLIC_*` env. Route D.
+- [x] **M0** `git init -b main`, verify `.gitignore`, baseline snapshot commit (pre-existing code, not authored here). Route inline (mechanical).
+- [x] **M1** Test runner: `jest-expo` + `@testing-library/react-native`, `npm test`, smoke test. Route D.
+- [x] **M2** Honest copy & config: remove "Local" pill and false claims, accurate data notice, API URL/key from `EXPO_PUBLIC_*` env. Route D.
 - [ ] **M3** Consent onboarding: first-run gate (what it is/isn't, data handling, 18+, terms), `POST /sesion`, persisted consent version + token; chat blocked until accepted. Route D.
 - [ ] **M4** API client hardening: Bearer token, timeout, response validation, typed errors instead of fabricated high risk, 401 → re-consent, "Borrar" calls `DELETE /sesion`. Route D.
 - [ ] **M5** Risk UI robustness: `RiskBadge` fallback, `CrisisBanner` on `riesgo`/`riesgo_sesion` ≥ ALTO with tap-to-call resources (server payload, local fallback). Route D.
@@ -69,5 +69,13 @@ Route legend: D = delegated direct (trigger: 2+ non-trivial files incl. tests).
 |---|---|---|---|---|
 | A1 | `c21baff` | RED: 5 failed/17 errors (`ModuleNotFoundError: unsloth`, `llm`); GREEN: `python3 -m pytest -q` 22 passed (writer + parent spot check) | high (`process_boundary` in tests) → consent granted → 4-lens review approved, acknowledged (lineage `review-edf40badd97734a0`, authority burned). Reviewed boundary → `c21baff` | Start script now `python psicolobot_api.py` so the model preloads; model path absolute; local `llm.py` shadows the PyPI `llm` package name. |
 
+| A2 | `b68e611` | RED: ImportError `CRISIS_RESOURCES` + 30 failed; GREEN: `python3 -m pytest -q` 252 passed (parent spot check 252 passed + independent probe of the 4 audit misses → CRITICO, figurative → BAJO) | high (`process_boundary`) → consent pending | Known accepted false positives: negations ("no quiero morir"), third-person mentions, "no puedo más con la tarea" (ALTO). Known false negatives: ambiguous idioms ("me voy a morir", "quiero que todo termine"), violence to others, leetspeak/spaced letters. `safety` shadows an installed PyPI package → rename planned in A3. Parse failures now store the exchange. |
+| M0 | `7fc71cb` (app `main`) | n/a (baseline snapshot of pre-existing code, inline) | n/a (branch point) | `git init -b main`; existing `.gitignore` covers node_modules/.expo/dist. |
+| M1 | `905fe40` (app) | RED: `npm error Missing script: "test"`; GREEN: `npm test -- --ci` 4 passed, `npm run typecheck` ok (parent spot check) | medium (`executable_change` jest.setup.ts; slice budget counted lockfile) → consent granted → 1-lens review approved, acknowledged (lineage `review-befd3a4684c2cdf6`, authority burned). App reviewed boundary → `905fe40` | jest 29.7, jest-expo 54.0.18, RNTL 14.1 (async render; react-reconciler peer warning vs React 19.1 — fallback RNTL 13.3.3). AsyncStorage mock in `jest.setup.ts`. 47 authored lines. |
+
+| M2 | `d6f0be2` (app) | RED: 13 failed (old copy, Local pill, missing config); GREEN: `npm test -- --ci` 35 passed, typecheck ok (parent spot check) | medium (`configuration_change` .env.example) → consent pending (lineage `review-69dd6289d1ae120d`) | New welcome/check-in copy (server processing, 30-day retention, phone copy until "Borrar", not emergency). `src/config.ts` reads `EXPO_PUBLIC_API_URL` (base URL, no path) / `EXPO_PUBLIC_API_KEY`; `ApiConfigError` when missing. Stored old welcome replaced on load. "30 días" true only once A4 ships — don't release M2 alone. `proyecto_completo.md` left as historical snapshot. |
+
+A2 review: consent granted → 4-lens review running (lineage `review-fc615ec4f5979ab4`).
+
 ## Next step
-A2.
+A2 review → A3 (also rename `safety.py` → `crisis_safety.py`); M2 can start in parallel (separate repo).
