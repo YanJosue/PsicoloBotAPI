@@ -232,6 +232,7 @@ def test_a_clean_completion_is_processed_and_passes_through():
     assert response.model_dump() == {
         "emocion": "tristeza",
         "riesgo": "BAJO",
+        "riesgo_sesion": "BAJO",
         "tematica": "estado de ánimo",
         "resumen": "El usuario expresa tristeza.",
         "respuesta": "Aquí estoy contigo.",
@@ -291,6 +292,70 @@ def test_response_resources_are_typed_crisis_resources():
     assert [r.nombre for r in response.recursos_crisis] == [
         "Línea de la Vida", "SAPTEL", "Emergencias",
     ]
+
+
+# ─── build_response: session risk (A4) ──────────────────────────
+# Changed in A4: ``recursos_crisis`` follows max(riesgo, riesgo_sesion), not
+# only the current ``riesgo``, so a calm follow-up message after a crisis
+# still shows the help resources. With no prior session risk nothing changes.
+
+
+def test_session_risk_defaults_to_the_final_risk():
+    calm = build_response(model_json(riesgo="BAJO"), NO_RISK)
+    crisis = build_response(model_json(riesgo="BAJO"), CRITICO)
+
+    assert calm.riesgo_sesion == "BAJO"
+    assert crisis.riesgo_sesion == "CRITICO"
+
+
+@pytest.mark.parametrize("prior", ["ALTO", "CRITICO"])
+def test_a_high_prior_session_risk_keeps_the_resources_on_a_calm_message(prior):
+    response = build_response(
+        model_json(riesgo="BAJO", respuesta="Me da gusto."), NO_RISK, prior
+    )
+
+    assert response.riesgo == "BAJO"
+    assert response.riesgo_sesion == prior
+    assert [r.model_dump() for r in response.recursos_crisis] == list(
+        CRISIS_RESOURCES
+    )
+    # Only the resources carry over: the reply and the flags are the current
+    # message's (no hotline appended, no guardrail activation).
+    assert response.respuesta == "Me da gusto."
+    assert response.guardrail_activado is False
+
+
+@pytest.mark.parametrize("prior", ["BAJO", "MEDIO"])
+def test_a_low_prior_session_risk_adds_no_resources(prior):
+    response = build_response(model_json(riesgo="BAJO"), NO_RISK, prior)
+
+    assert response.riesgo_sesion == prior
+    assert response.recursos_crisis == []
+
+
+def test_session_risk_never_drops_below_the_current_risk():
+    response = build_response(model_json(riesgo="ALTO"), NO_RISK, "MEDIO")
+
+    assert response.riesgo == "ALTO"
+    assert response.riesgo_sesion == "ALTO"
+
+
+@pytest.mark.parametrize("prior", [None, 7, "???", "", ["CRITICO"]])
+def test_an_unusable_prior_session_risk_is_ignored(prior):
+    response = build_response(model_json(riesgo="BAJO"), NO_RISK, prior)
+
+    assert response.riesgo_sesion == "BAJO"
+    assert response.recursos_crisis == []
+
+
+def test_prior_session_risk_does_not_change_an_unprocessed_reply():
+    response = build_response("no json", NO_RISK, "CRITICO")
+
+    assert response.procesado is False
+    assert response.riesgo == "MEDIO"
+    assert response.riesgo_sesion == "CRITICO"
+    assert response.respuesta == REPHRASE_REPLY
+    assert response.recursos_crisis
 
 
 # ─── build_response: the final risk is computed in one place ────
@@ -451,6 +516,6 @@ def test_unknown_extra_keys_from_the_model_never_reach_the_response():
     response = build_response(raw, NO_RISK)
 
     assert set(response.model_dump()) == {
-        "emocion", "riesgo", "tematica", "resumen", "respuesta", "modismos",
-        "guardrail_activado", "recursos_crisis", "procesado",
+        "emocion", "riesgo", "riesgo_sesion", "tematica", "resumen", "respuesta",
+        "modismos", "guardrail_activado", "recursos_crisis", "procesado",
     }

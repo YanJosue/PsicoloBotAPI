@@ -4,7 +4,9 @@ The language model is untrusted: its output may be prose, truncated JSON, an
 array, an unknown risk label or an enormous string. Everything the client sees
 goes through ``build_response``, which is also the single place where the final
 risk is computed (``max(model risk, safety level)``), so no code path can
-return a lower risk than the safety layer asked for.
+return a lower risk than the safety layer asked for. The risk remembered from
+earlier in the conversation (``riesgo_sesion``) is combined here too, and it
+keeps the crisis resources on screen after a calm follow-up message.
 
 Privacy: nothing in this module logs, and the raw completion is never copied
 into the response. Fields the model invents beyond the documented ones are
@@ -104,6 +106,11 @@ class AnalysisResponse(BaseModel):
         description="Final risk: the higher of the model's estimate and the "
         "independent safety layer."
     )
+    riesgo_sesion: Literal["BAJO", "MEDIO", "ALTO", "CRITICO"] = Field(
+        description="Highest risk of this conversation within the memory "
+        "window (24 h by default), including this message; never lower than "
+        "riesgo."
+    )
     tematica: str = Field(description=f"At most {TEMATICA_MAX} characters.")
     resumen: str = Field(description=f"At most {RESUMEN_MAX} characters.")
     respuesta: str = Field(description=f"At most {RESPUESTA_MAX} characters, never empty.")
@@ -114,7 +121,8 @@ class AnalysisResponse(BaseModel):
         description="True when the safety layer raised the model's risk."
     )
     recursos_crisis: list[CrisisResource] = Field(
-        description="Hotlines to show; filled from ALTO upwards, else empty."
+        description="Hotlines to show; filled when riesgo or riesgo_sesion is "
+        "ALTO or higher, else empty."
     )
     procesado: bool = Field(
         description="False when the model output could not be used (the model "
@@ -239,12 +247,21 @@ def _clean_modismos(value) -> list[str]:
 # ─── Final response ─────────────────────────────────────────────
 
 
-def build_response(raw, seguridad: SafetyAssessment) -> AnalysisResponse:
+def build_response(
+    raw, seguridad: SafetyAssessment, riesgo_sesion_previo="BAJO"
+) -> AnalysisResponse:
     """Validated response for a raw completion (``None`` when the model raised).
 
     The final risk is ``max(model risk, safety level)``; an unusable completion
     counts as a MEDIO model risk. ``guardrail_activado`` is true when the
     safety layer raised the model's risk.
+
+    ``riesgo_sesion_previo`` is the risk remembered from earlier in the
+    conversation (already limited to the memory window by the caller; unusable
+    values are ignored). The session risk is ``max(riesgo, previous)`` and the
+    crisis resources follow it, so they stay visible on a calm follow-up
+    message; the reply text and ``guardrail_activado`` depend only on the
+    current message.
     """
     parsed = extract_json_object(raw)
     procesado = parsed is not None
@@ -252,6 +269,7 @@ def build_response(raw, seguridad: SafetyAssessment) -> AnalysisResponse:
 
     riesgo_modelo = normalize_risk(data.get("riesgo"))
     riesgo = max_risk(riesgo_modelo, seguridad.level)
+    riesgo_sesion = max_risk(riesgo, riesgo_sesion_previo)
     guardrail = RISK_ORDER[riesgo] > RISK_ORDER[riesgo_modelo]
 
     if procesado:
@@ -277,11 +295,12 @@ def build_response(raw, seguridad: SafetyAssessment) -> AnalysisResponse:
     return AnalysisResponse(
         emocion=emocion,
         riesgo=riesgo,
+        riesgo_sesion=riesgo_sesion,
         tematica=tematica,
         resumen=resumen,
         respuesta=respuesta,
         modismos=modismos,
         guardrail_activado=guardrail,
-        recursos_crisis=resources_for(riesgo),
+        recursos_crisis=resources_for(riesgo_sesion),
         procesado=procesado,
     )

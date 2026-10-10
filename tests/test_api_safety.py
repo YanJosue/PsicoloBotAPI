@@ -45,11 +45,8 @@ HIGH_TEXT = "ya no aguanto"
 BENIGN_TEXT = "hoy fue un buen día"
 
 
-def analizar(client, texto, session_id=None):
-    body = {"texto": texto}
-    if session_id is not None:
-        body["session_id"] = session_id
-    return client.post("/analizar", json=body)
+def analizar(client, texto):
+    return client.post("/analizar", json={"texto": texto})
 
 
 # ─── Model success path ─────────────────────────────────────────
@@ -302,12 +299,12 @@ def test_unparseable_output_still_stores_the_interaction(
 ):
     fake_generator.respond_with("no json", model_json())
 
-    analizar(client, CRISIS_TEXT, session_id="s1")
-    analizar(client, "segundo mensaje", session_id="s1")
+    analizar(client, CRISIS_TEXT)
+    analizar(client, "segundo mensaje")
 
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT role, content FROM memory WHERE session_id='s1' ORDER BY rowid"
+            "SELECT role, content FROM messages ORDER BY id"
         ).fetchall()
     assert [r[0] for r in rows[:2]] == ["user", "assistant"]
     assert rows[0][1] == CRISIS_TEXT
@@ -322,11 +319,11 @@ def test_unparseable_output_still_stores_the_interaction(
 def test_generator_exception_still_stores_the_interaction(
     client, db_path, failing_generator
 ):
-    analizar(client, HIGH_TEXT, session_id="s1")
+    analizar(client, HIGH_TEXT)
 
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT role, content FROM memory WHERE session_id='s1' ORDER BY rowid"
+            "SELECT role, content FROM messages ORDER BY id"
         ).fetchall()
     assert [r[0] for r in rows] == ["user", "assistant"]
     assert rows[0][1] == HIGH_TEXT

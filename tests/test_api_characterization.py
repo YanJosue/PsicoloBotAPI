@@ -1,11 +1,12 @@
 """Characterization tests: lock the current /analizar and /health behavior.
 
 These pin the behavior of the API before the safety/privacy work so the
-refactor can be proven behavior-preserving. Assertions that describe
-behavior planned to change (the shared ``session_id``) are marked and will
-be rewritten by the task that changes them.
+refactor can be proven behavior-preserving. The history is now scoped to the
+caller's own consent-gated session (the shared ``session_id`` is gone); the
+``client`` fixture already carries that session's Bearer token.
 """
 
+import hashlib
 import sqlite3
 import subprocess
 import sys
@@ -22,11 +23,8 @@ HOTLINE_APPENDIX = (
 )
 
 
-def analizar(client, texto, session_id=None):
-    body = {"texto": texto}
-    if session_id is not None:
-        body["session_id"] = session_id
-    return client.post("/analizar", json=body)
+def analizar(client, texto):
+    return client.post("/analizar", json={"texto": texto})
 
 
 # ─── /health ────────────────────────────────────────────────────
@@ -156,8 +154,8 @@ def test_history_from_a_previous_call_is_injected_into_the_next_prompt(
         model_json(emocion="alegria", respuesta="Me alegra."),
     )
 
-    analizar(client, "primer mensaje", session_id="s1")
-    analizar(client, "segundo mensaje", session_id="s1")
+    analizar(client, "primer mensaje")
+    analizar(client, "segundo mensaje")
 
     first, second = fake_generator.user_content(0), fake_generator.user_content(1)
     assert "Historial reciente" not in first
@@ -168,15 +166,16 @@ def test_history_from_a_previous_call_is_injected_into_the_next_prompt(
 
 
 def test_interaction_is_stored_in_the_configured_sqlite_file(
-    client, db_path, fake_generator
+    client, db_path, session_token, fake_generator
 ):
-    analizar(client, "hola", session_id="s1")
+    analizar(client, "hola")
 
+    digest = hashlib.sha256(session_token.encode()).hexdigest()
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT session_id, role FROM memory ORDER BY rowid"
+            "SELECT token_hash, role FROM messages ORDER BY id"
         ).fetchall()
-    assert rows == [("s1", "user"), ("s1", "assistant")]
+    assert rows == [(digest, "user"), (digest, "assistant")]
 
 
 # ─── /analizar: guardrail ───────────────────────────────────────
@@ -283,8 +282,8 @@ def test_parse_failure_still_stores_the_interaction(client, fake_generator):
     # conversation continuity so a crisis message is never silently forgotten.
     fake_generator.respond_with("no json", model_json())
 
-    analizar(client, "primer mensaje", session_id="s1")
-    analizar(client, "segundo mensaje", session_id="s1")
+    analizar(client, "primer mensaje")
+    analizar(client, "segundo mensaje")
 
     second = fake_generator.user_content(1)
     assert '- Paciente dijo: "primer mensaje"' in second

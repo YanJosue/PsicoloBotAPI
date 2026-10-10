@@ -1,13 +1,23 @@
-"""Shared fixtures: temporary DB, fake model generator and a TestClient.
+"""Shared fixtures: temporary DB, fake model generator, fake clock and clients.
 
 None of these tests may require a GPU, torch or unsloth, so the real model is
 always replaced through ``app.dependency_overrides``.
+
+``anon_client`` sends no credentials (for the auth tests); ``client`` already
+owns a consent-gated session and sends its Bearer token on every request.
 """
 
 import pytest
-from fastapi.testclient import TestClient
 
-from tests.fakes import FailingGenerator, FakeGenerator, model_json
+from tests.fakes import (
+    FailingGenerator,
+    FakeClock,
+    FakeGenerator,
+    bearer,
+    model_json,
+    open_session,
+    running_app,
+)
 
 
 @pytest.fixture
@@ -24,15 +34,27 @@ def fake_generator():
 
 
 @pytest.fixture
-def client(db_path, fake_generator):
-    import psicolobot_api
+def clock():
+    return FakeClock()
 
-    psicolobot_api.app.dependency_overrides[psicolobot_api.get_generator] = (
-        lambda: fake_generator
-    )
-    with TestClient(psicolobot_api.app) as test_client:
+
+@pytest.fixture
+def anon_client(db_path, fake_generator, clock):
+    """Client without credentials."""
+    with running_app(fake_generator, clock) as test_client:
         yield test_client
-    psicolobot_api.app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def session_token(anon_client):
+    return open_session(anon_client)
+
+
+@pytest.fixture
+def client(anon_client, session_token):
+    """Client authenticated as one consenting session."""
+    anon_client.headers.update(bearer(session_token))
+    return anon_client
 
 
 @pytest.fixture
