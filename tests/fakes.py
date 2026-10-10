@@ -1,6 +1,26 @@
-"""Test doubles shared by the API tests."""
+"""Test doubles and helpers shared by the API tests."""
 
 import json
+from contextlib import contextmanager
+
+CONSENT = {
+    "acepta_terminos": True,
+    "mayor_de_edad": True,
+    "version_consentimiento": "2026-10-v1",
+}
+
+
+class FakeClock:
+    """Injectable clock (integer epoch seconds) that tests move by hand."""
+
+    def __init__(self, start: int = 1_800_000_000):
+        self.now = start
+
+    def __call__(self) -> int:
+        return self.now
+
+    def advance(self, seconds: int = 0, *, hours: int = 0, days: int = 0) -> None:
+        self.now += seconds + hours * 3600 + days * 86400
 
 
 class FakeGenerator:
@@ -57,3 +77,34 @@ def model_json(**overrides) -> str:
     }
     payload.update(overrides)
     return json.dumps(payload, ensure_ascii=False)
+
+
+def bearer(token: str) -> dict:
+    """Authorization header for a session token."""
+    return {"Authorization": f"Bearer {token}"}
+
+
+def open_session(client, headers: dict | None = None, **overrides) -> str:
+    """Create a session through ``POST /sesion`` and return its token."""
+    response = client.post("/sesion", json={**CONSENT, **overrides}, headers=headers)
+    assert response.status_code == 201, response.text
+    return response.json()["token"]
+
+
+@contextmanager
+def running_app(generator, clock):
+    """The module-level app with a fake generator and clock, started once.
+
+    Entering runs the startup (lifespan) code; leaving clears the overrides.
+    """
+    import psicolobot_api
+    from fastapi.testclient import TestClient
+
+    app = psicolobot_api.app
+    app.dependency_overrides[psicolobot_api.get_generator] = lambda: generator
+    app.dependency_overrides[psicolobot_api.get_now] = clock
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.clear()

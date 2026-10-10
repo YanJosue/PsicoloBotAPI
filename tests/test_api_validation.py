@@ -7,6 +7,7 @@ from tests.fakes import FailingGenerator, model_json
 RESPONSE_FIELDS = {
     "emocion",
     "riesgo",
+    "riesgo_sesion",
     "tematica",
     "resumen",
     "respuesta",
@@ -57,6 +58,7 @@ def test_openapi_documents_the_response_model(client):
     assert set(model["required"]) == RESPONSE_FIELDS
     props = model["properties"]
     assert props["riesgo"]["enum"] == ["BAJO", "MEDIO", "ALTO", "CRITICO"]
+    assert props["riesgo_sesion"]["enum"] == ["BAJO", "MEDIO", "ALTO", "CRITICO"]
     for name in ("emocion", "tematica", "resumen", "respuesta"):
         assert props[name]["type"] == "string"
     assert props["modismos"]["type"] == "array"
