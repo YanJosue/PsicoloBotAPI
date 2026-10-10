@@ -157,7 +157,7 @@ Las variables se leen del entorno del proceso; la API no carga archivos `.env`.
 | `PSICOLOBOT_DB_PATH` | `chat_memory.db` (relativa al directorio de trabajo) | En cada acceso a la base. | No se valida; se usa tal cual. |
 | `PSICOLOBOT_RETENTION_DAYS` | `30` | Al arrancar (purga) y al crear una sesión. | No entero o menor que 1: se usa `30`. |
 | `PSICOLOBOT_SESSION_RISK_HOURS` | `24` | En cada `POST /analizar`. | No entero o menor que 1: se usa `24`. |
-| `PSICOLOBOT_CORS_ORIGINS` | vacío (sin acceso entre orígenes) | Al arrancar la aplicación (hay que reiniciar para cambiarla). | Se separa por comas; las entradas vacías se ignoran y se quita la `/` final. |
+| `PSICOLOBOT_CORS_ORIGINS` | vacío (sin acceso entre orígenes) | Al arrancar la aplicación (hay que reiniciar para cambiarla). | Se separa por comas; las entradas vacías se ignoran y se quita la `/` final. Con CORS activo, la API expone la cabecera `WWW-Authenticate` para que el cliente web distinga un 401 de sesión de uno de clave de API. |
 | `PSICOLOBOT_HOST` | `127.0.0.1` | Al arrancar con `python psicolobot_api.py`. | Vacío o en blanco: se usa `127.0.0.1`. |
 | `PSICOLOBOT_PORT` | `8000` | Al arrancar con `python psicolobot_api.py`. | No entero o fuera de 1 a 65535: se usa `8000`. |
 | `PSICOLOBOT_API_KEY` | sin definir (desactivada) | En cada petición. | Vacía equivale a desactivada. |

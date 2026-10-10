@@ -355,6 +355,8 @@ def create_app() -> FastAPI:
             allow_credentials=False,
             allow_methods=["GET", "POST", "DELETE"],
             allow_headers=["Authorization", "Content-Type", "X-API-Key"],
+            # The web client reads it to tell a Bearer 401 from an ApiKey 401.
+            expose_headers=["WWW-Authenticate"],
         )
     application.include_router(router)
     return application

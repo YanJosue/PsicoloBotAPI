@@ -669,6 +669,25 @@ def test_the_preflight_lists_only_the_needed_methods_and_headers(db_path, monkey
     assert "*" not in headers
 
 
+def test_a_cross_origin_401_exposes_www_authenticate(db_path, monkeypatch):
+    # Browsers hide WWW-Authenticate from scripts unless it is exposed, and the
+    # web client needs it to tell an expired session from a bad deployment key.
+    monkeypatch.setenv("PSICOLOBOT_CORS_ORIGINS", "https://app.example")
+    import psicolobot_api
+
+    with TestClient(psicolobot_api.create_app()) as test_client:
+        response = test_client.post(
+            "/analizar", json={"texto": "hola"}, headers={"Origin": "https://app.example"}
+        )
+
+    assert response.status_code == 401
+    exposed = {
+        h.strip().lower()
+        for h in response.headers["access-control-expose-headers"].split(",")
+    }
+    assert exposed == {"www-authenticate"}
+
+
 # ─── Network binding ────────────────────────────────────────────
 
 
