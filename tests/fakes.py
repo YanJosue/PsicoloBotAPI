@@ -30,6 +30,21 @@ class FakeGenerator:
         )
 
 
+class FailingGenerator:
+    """Generator whose ``generate`` always raises.
+
+    The error message echoes the whole prompt, so tests can prove the API
+    never logs or returns exception text (which may contain user text).
+    """
+
+    def __init__(self):
+        self.calls: list[list[dict]] = []
+
+    def generate(self, messages: list[dict]) -> str:
+        self.calls.append(messages)
+        raise RuntimeError(f"model crashed while processing: {messages}")
+
+
 def model_json(**overrides) -> str:
     """A well-formed model completion; override any field per test."""
     payload = {
