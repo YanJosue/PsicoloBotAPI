@@ -37,7 +37,7 @@ An audit (2026-09-29) verified that:
 Route legend: D = delegated direct (trigger: 2+ non-trivial files incl. tests).
 
 ### API (`PsicoloBotAPI`, branch `feat/phase0-safety-privacy`)
-- [ ] **A1** Testable structure: lazy model loading behind an injectable generator, env-configurable DB path, pytest harness with a fake generator. Route D.
+- [x] **A1** Testable structure: lazy model loading behind an injectable generator, env-configurable DB path, pytest harness with a fake generator. Route D.
 - [ ] **A2** Independent crisis layer (`safety.py`): accent/orthography normalization, expanded Mexican-Spanish CRITICO/ALTO patterns, figurative exclusions, applied to the full raw text before the LLM and on every path (success, parse failure, exception); final risk = max(model, safety); crisis resources payload; safe reply template when the model fails at ≥ ALTO. Route D.
 - [ ] **A3** Output validation: Pydantic response model, risk/emotion normalization (unknown risk never lowers safety), robust JSON extraction, `procesado` flag, remove `error_debug`. Route D.
 - [ ] **A4** Sessions & privacy: consent-gated token sessions, Bearer auth, `DELETE /sesion`, per-session max risk with 24 h window (`riesgo_sesion`, injected into the prompt), retention purge, CORS/host from env, optional API key. Route D.
@@ -59,14 +59,15 @@ Route legend: D = delegated direct (trigger: 2+ non-trivial files incl. tests).
 - API: `python3 -m pytest` green. App: `npm test` and `npm run typecheck` green.
 
 ## Delivery
-- Forecast: ~1,150 authored lines API + ~800 app (lockfiles excluded) → above the ~400-line budget; strategy `ask-on-risk` (chain strategy: pending user answer).
+- Forecast: ~1,150 authored lines API + ~800 app (lockfiles excluded) → above the ~400-line budget; strategy `ask-on-risk`, chain strategy chosen by the user 2026-10-09: `stacked-to-main` (each slice PR targets main, stacked on the previous one; main is temporarily incompatible between the API auth slice and the app slices — expected).
+- Slice boundaries (API): S1 = `c21baff` (A1).
 - Work-unit commits on `feat/phase0-safety-privacy` in each repo; push/PR are the user's decision.
 - RDD is on (global): after each work-unit commit run `gentle-ai review assess --committed-only` from the last reviewed boundary (first boundary = branch point).
 
 ## Progress & evidence
 | Task | Commit | Checks | RDD assess | Notes |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| A1 | `c21baff` | RED: 5 failed/17 errors (`ModuleNotFoundError: unsloth`, `llm`); GREEN: `python3 -m pytest -q` 22 passed (writer + parent spot check) | high (`process_boundary` in tests) → consent granted → 4-lens review approved, acknowledged (lineage `review-edf40badd97734a0`, authority burned). Reviewed boundary → `c21baff` | Start script now `python psicolobot_api.py` so the model preloads; model path absolute; local `llm.py` shadows the PyPI `llm` package name. |
 
 ## Next step
-A1.
+A2.

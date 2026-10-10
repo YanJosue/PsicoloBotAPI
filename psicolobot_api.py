@@ -2,6 +2,17 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from llm import LoraGenerator
+# Named imports on purpose: a PyPI package called "safety" exists, and if it
+# ever shadowed our module this must fail at startup, not on every request.
+from safety import (
+    HOTLINE_SENTENCE,
+    RISK_ORDER,
+    SafetyAssessment,
+    assess,
+    max_risk,
+    resources_for,
+    safe_reply_for,
+)
 import functools, json, csv, os, threading, uvicorn
 
 import sqlite3
@@ -84,65 +95,6 @@ def detectar_emociones_lexico(texto: str, lexico: dict[str, list[str]]) -> list[
                 break  # Una coincidencia por categoría es suficiente
     return detectadas
 
-# ─── Guardrail de seguridad: override de riesgo por frases críticas ──
-import re
-
-# Frases que SIEMPRE deben ser CRITICO (ideación suicida, autolesión, deseo de muerte)
-PATRONES_CRITICO = [
-    r"quiero\s+morir",
-    r"quiero\s+matarme",
-    r"me\s+quiero\s+matar",
-    r"no\s+quiero\s+seguir\s+viv",
-    r"mejor\s+me\s+muero",
-    r"me\s+voy\s+a\s+(matar|suicidar)",
-    r"pienso\s+en\s+(suicid|matarme|morir)",
-    r"ya\s+no\s+quiero\s+(estar|existir|vivir)",
-    r"me\s+(corto|lastimo|hago\s+daño)",
-    r"autolesion",
-    r"cortarme\s+(las\s+venas|los\s+brazos)",
-    r"tengo\s+un\s+plan\s+para\s+morir",
-    r"esta\s+noche\s+me\s+(mato|muero)",
-    r"pastillas.*morir",
-    r"sobredosis",
-    r"colgarme|ahorcarme",
-    r"tirarme\s+(de|al)",
-]
-
-# Frases que deben ser mínimo ALTO (carga emocional, desesperanza severa)
-PATRONES_ALTO = [
-    r"mejor\s+sin\s+m[ií]",
-    r"estar[ií]an\s+mejor\s+sin\s+m[ií]",
-    r"no\s+le\s+(encuentro|veo)\s+sentido",
-    r"no\s+sirvo\s+para\s+nada",
-    r"soy\s+una\s+carga",
-    r"nadie\s+me\s+(quiere|necesita|extrañar)",
-    r"no\s+tengo\s+raz[oó]n\s+(para|de)\s+vivir",
-    r"ojal[aá]\s+no\s+(hubiera|existiera|despertara)",
-    r"desaparecer",
-    r"no\s+puedo\s+m[aá]s",
-    r"estoy\s+harto.*todo",
-    r"ya\s+no\s+aguanto",
-    r"todo\s+me\s+sale\s+mal",
-    r"no\s+hay\s+salida",
-    r"me\s+siento\s+(vac[ií]o|inútil|invisible)",
-]
-
-RISK_ORDER = {"BAJO": 0, "MEDIO": 1, "ALTO": 2, "CRITICO": 3}
-
-def evaluar_riesgo_minimo(texto: str) -> str:
-    """Analiza el texto buscando patrones de riesgo que el modelo podría subestimar.
-    Retorna el nivel de riesgo MÍNIMO que debe aplicarse, o 'BAJO' si no detecta nada."""
-    texto_lower = texto.lower()
-    # Primero buscar CRITICO (más urgente)
-    for patron in PATRONES_CRITICO:
-        if re.search(patron, texto_lower):
-            return "CRITICO"
-    # Luego ALTO
-    for patron in PATRONES_ALTO:
-        if re.search(patron, texto_lower):
-            return "ALTO"
-    return "BAJO"
-
 # ─── Generador LLM (carga perezosa, inyectable) ─────────────────
 _generator: LoraGenerator | None = None
 _generator_lock = threading.Lock()
@@ -186,6 +138,78 @@ Analiza el texto del usuario y responde ÚNICAMENTE con un JSON válido con esta
 ## EMOCIONES VÁLIDAS:
 alegria, amor, asco, culpa, dolor, enojo, ira, miedo, orgullo, tristeza, vergüenza"""
 
+# ─── Salida del modelo y guardrail de seguridad ─────────────────
+REPHRASE_REPLY = (
+    "Disculpa, no logré procesar bien tu mensaje. "
+    "¿Podrías decirme con otras palabras cómo te sientes?"
+)
+
+def parse_model_output(raw) -> dict | None:
+    """Parse the raw completion into a dict, or None when it is unusable
+    (not text, not JSON, or JSON that is not an object)."""
+    if not isinstance(raw, str):
+        return None
+    raw_clean = raw.replace("```json", "").replace("```", "").strip()
+    # A veces el modelo mete texto después del JSON, cortamos en el último '}'
+    last_brace = raw_clean.rfind("}")
+    if last_brace != -1:
+        raw_clean = raw_clean[:last_brace + 1]
+    try:
+        parsed = json.loads(raw_clean)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+def normalize_model_risk(value) -> str:
+    """Model risk label as an upper-case level; anything unusable counts as MEDIO."""
+    key = value.strip().upper() if isinstance(value, str) else ""
+    return key if key in RISK_ORDER else "MEDIO"
+
+def apply_guardrail(resultado: dict, seguridad: SafetyAssessment) -> dict:
+    """Final risk = max(model risk, safety level); make sure a CRITICO reply
+    carries the Línea de la Vida sentence. Mutates and returns ``resultado``."""
+    riesgo_modelo = normalize_model_risk(resultado.get("riesgo"))
+    riesgo_final = max_risk(riesgo_modelo, seguridad.level)
+    elevado = RISK_ORDER[riesgo_final] > RISK_ORDER[riesgo_modelo]
+    if elevado:
+        print(f"⚠️  GUARDRAIL: model risk ({riesgo_modelo}) raised to {riesgo_final}")
+
+    respuesta = resultado.get("respuesta")
+    if not isinstance(respuesta, str):
+        respuesta = ""
+    if not respuesta.strip():
+        respuesta = safe_reply_for(riesgo_final) or respuesta
+    if riesgo_final == "CRITICO" and HOTLINE_SENTENCE not in respuesta:
+        respuesta += (
+            f"\n\n⚠️ Si sientes que estás en peligro, por favor llama a la {HOTLINE_SENTENCE}. "
+            "No estás solo/a."
+        )
+
+    resultado["riesgo"] = riesgo_final
+    resultado["respuesta"] = respuesta
+    resultado["guardrail_activado"] = elevado
+    resultado["recursos_crisis"] = resources_for(riesgo_final)
+    return resultado
+
+def fallback_response(seguridad: SafetyAssessment, raw: str | None) -> dict:
+    """Response for an unusable model completion or a raising generator.
+    The risk never drops below MEDIO and never below the safety level."""
+    riesgo = max_risk("MEDIO", seguridad.level)
+    response = {
+        "riesgo": riesgo,
+        "emocion": "No detectable",
+        "tematica": "No detectable",
+        "resumen": "No se pudo procesar la respuesta del modelo.",
+        "respuesta": safe_reply_for(riesgo) or REPHRASE_REPLY,
+        "modismos": [],
+        "guardrail_activado": RISK_ORDER[riesgo] > RISK_ORDER["MEDIO"],
+        "recursos_crisis": resources_for(riesgo),
+    }
+    if raw is not None:
+        # Planned for removal in task A3 (raw model output must not leak).
+        response["error_debug"] = raw[:300]
+    return response
+
 # ─── FastAPI ────────────────────────────────────────────────────
 app = FastAPI(title="Psicolobot API", version="3.1")
 
@@ -203,6 +227,9 @@ class PostRequest(BaseModel):
 
 @app.post("/analizar")
 async def analizar(req: PostRequest, generator: LoraGenerator = Depends(get_generator)):
+    # The safety layer reads the FULL raw text, before the prompt truncation
+    # and before the model is called, so it cannot depend on either.
+    seguridad = assess(req.texto)
     texto = req.texto[:MAX_INPUT_CHARS]
     session_id = req.session_id
 
@@ -248,55 +275,29 @@ async def analizar(req: PostRequest, generator: LoraGenerator = Depends(get_gene
         {"role": "user", "content": user_content},
     ]
 
-    raw = generator.generate(messages)
-
-    # Limpiar y parsear el JSON de salida
-    raw_clean = raw.replace("```json", "").replace("```", "").strip()
-    # A veces el modelo mete texto después del JSON, cortamos en el último '}'
-    last_brace = raw_clean.rfind("}")
-    if last_brace != -1:
-        raw_clean = raw_clean[:last_brace + 1]
-
+    # A raising generator is handled like unparseable output: never a 500.
+    # Only the exception type is logged; its message may contain user text.
+    raw = None
     try:
-        resultado = json.loads(raw_clean)
+        raw = generator.generate(messages)
+    except Exception as exc:
+        print(f"⚠️  Generator failed ({type(exc).__name__}); using the safety fallback")
 
-        # ── Guardrail de seguridad: override de riesgo ──────────────
-        riesgo_modelo = resultado.get("riesgo", "MEDIO").upper()
-        riesgo_minimo = evaluar_riesgo_minimo(texto)
+    resultado = parse_model_output(raw)
+    if resultado is None:
+        respuesta = fallback_response(seguridad, raw)
+    else:
+        respuesta = apply_guardrail(resultado, seguridad)
 
-        # Si nuestro detector dice que el riesgo es mayor, lo subimos
-        if RISK_ORDER.get(riesgo_minimo, 0) > RISK_ORDER.get(riesgo_modelo, 0):
-            print(f"⚠️  GUARDRAIL: Riesgo del modelo ({riesgo_modelo}) overridden a {riesgo_minimo}")
-            resultado["riesgo"] = riesgo_minimo
-            resultado["guardrail_activado"] = True
+    # Guardar en memoria: texto del usuario + JSON compacto del asistente (ahorra tokens
+    # de contexto). También en los fallbacks, para no perder la continuidad.
+    compact_assistant = json.dumps({
+        "emocion": respuesta.get("emocion", ""),
+        "respuesta": respuesta.get("respuesta", "")
+    }, ensure_ascii=False)
+    guardar_interaccion(session_id, texto, compact_assistant)
 
-        # Si el riesgo final es CRITICO, forzar Línea de la Vida
-        if resultado.get("riesgo", "").upper() == "CRITICO":
-            linea = "Línea de la Vida: 800 911 2000"
-            if linea not in resultado.get("respuesta", ""):
-                resultado["respuesta"] = (
-                    resultado.get("respuesta", "") +
-                    f"\n\n⚠️ Si sientes que estás en peligro, por favor llama a la {linea}. No estás solo/a."
-                )
-                
-        # Guardar en memoria: texto del usuario + JSON compacto del modelo (ahorra tokens de contexto)
-        compact_assistant = json.dumps({
-            "emocion": resultado.get("emocion", ""),
-            "respuesta": resultado.get("respuesta", "")
-        }, ensure_ascii=False)
-        guardar_interaccion(session_id, texto, compact_assistant)
-        
-        return resultado
-    except json.JSONDecodeError:
-        return {
-            "riesgo": "MEDIO",
-            "emocion": "No detectable",
-            "tematica": "No detectable",
-            "resumen": "No se pudo procesar la respuesta del modelo.",
-            "respuesta": "Disculpa, no logré procesar bien tu mensaje. ¿Podrías decirme con otras palabras cómo te sientes?",
-            "modismos": [],
-            "error_debug": raw[:300],
-        }
+    return respuesta
 
 @app.get("/health")
 async def health():

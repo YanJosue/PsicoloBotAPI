@@ -277,10 +277,14 @@ def test_malformed_model_output_returns_the_medio_fallback(
     assert body["error_debug"] == "esto no es json en absoluto"
 
 
-def test_parse_failure_does_not_store_the_interaction(client, fake_generator):
+def test_parse_failure_still_stores_the_interaction(client, fake_generator):
+    # Changed in A2 (was: "does not store"): a parse failure now keeps the
+    # conversation continuity so a crisis message is never silently forgotten.
     fake_generator.respond_with("no json", model_json())
 
     analizar(client, "primer mensaje", session_id="s1")
     analizar(client, "segundo mensaje", session_id="s1")
 
-    assert "Historial reciente" not in fake_generator.user_content(1)
+    second = fake_generator.user_content(1)
+    assert '- Paciente dijo: "primer mensaje"' in second
+    assert "No detectable" in second
